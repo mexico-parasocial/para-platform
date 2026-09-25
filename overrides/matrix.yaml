@@ -1,0 +1,23 @@
+# Se aplica sobre WatZappa/docker-compose.matrix.yaml.
+
+services:
+  synapse:
+    profiles: [matrix]
+  synapse-init:
+    profiles: [matrix]
+  synapse-db:
+    profiles: [matrix]
+  para-idp:
+    profiles: [matrix]
+  mas:
+    profiles: [matrix]
+  mas-db:
+    profiles: [matrix]
+  element-web:
+    profiles: [matrix]
+  matrix-bridge:
+    profiles: [matrix]
+    environment:
+      # Dentro de la plataforma mubEZ se alcanza por nombre de servicio; ya no
+      # hace falta salir al host por host.docker.internal.
+      M8_BASE_URL: ${M8_BASE_URL:-http://mubez:8787/v1}

@@ -1,0 +1,29 @@
+# Plataforma PARA: un solo punto de entrada para levantar todos los servicios.
+#
+# Este archivo NO define servicios propios. Incluye los compose que ya viven en
+# cada repo (WatZappa, mubEZ) y les agrega encima, con archivos de `overrides/`,
+# lo que solo tiene sentido a nivel plataforma: perfiles, cómo se encuentran
+# entre sí y el edge (Caddy) con todas las rutas públicas.
+#
+# Perfiles (se eligen con `make up PROFILES=...`):
+#   core      PDS, AppView (bsky + dataplane), bsync, Ozone, Postgres, Redis
+#   matrix    Synapse, MAS, para-idp, Element, matrix-bridge
+#   identity  mubEZ (broker M8: identidad, INE, ZKP)
+#   edge      Caddy: HTTPS y rutas públicas de todo lo anterior
+#
+# Al estar todo en un mismo proyecto de Compose, los servicios se ven por
+# nombre en la red por defecto del proyecto. La red externa `para-edge` se
+# conserva para que los despliegues antiguos por separado sigan funcionando.
+
+name: para
+
+include:
+  - path:
+      - ${WATZAPPA_DIR:-../WatZappa}/docker-compose.prod.yaml
+      - overrides/core.yaml
+  - path:
+      - ${WATZAPPA_DIR:-../WatZappa}/docker-compose.matrix.yaml
+      - overrides/matrix.yaml
+  - path:
+      - ${MUBEZ_DIR:-../mubEZ}/docker-compose.yml
+      - overrides/identity.yaml

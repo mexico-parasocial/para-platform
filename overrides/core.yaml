@@ -1,0 +1,29 @@
+# Se aplica sobre WatZappa/docker-compose.prod.yaml.
+# Las rutas relativas aquí se resuelven desde el directorio de WatZappa (el
+# primer archivo del include); las de la plataforma usan PLATFORM_DIR, que
+# exporta el Makefile.
+
+services:
+  postgres:
+    profiles: [core]
+  redis:
+    profiles: [core]
+  pds:
+    profiles: [core]
+  dataplane:
+    profiles: [core]
+  bsky:
+    profiles: [core]
+  bsync:
+    profiles: [core]
+  ozone:
+    profiles: [core]
+
+  # El edge es de la plataforma, no de WatZappa: publica también mubEZ y el
+  # bridge. El Caddyfile de la plataforma importa el de WatZappa sin copiarlo
+  # y agrega las rutas que no le pertenecen.
+  caddy:
+    profiles: [edge]
+    volumes:
+      - ${PLATFORM_DIR:?Ejecuta con make desde para-platform}/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./services/caddy/Caddyfile.prod:/etc/caddy/watzappa.Caddyfile:ro

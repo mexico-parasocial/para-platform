@@ -1,0 +1,23 @@
+# Edge de la plataforma PARA.
+#
+# Importa el Caddyfile de WatZappa tal cual (PDS, AppView, Ozone, bridge y el
+# dominio raíz) y agrega las rutas de servicios que viven en otros repos.
+# Así cada repo sigue siendo dueño de sus rutas y aquí solo se juntan.
+
+import /etc/caddy/watzappa.Caddyfile
+
+# ---------------------------------------------------------------------------
+# M8 — broker de identidad (mubEZ). Lo llaman PARA, iM8 y el matrix-bridge.
+# ---------------------------------------------------------------------------
+m8.{$PARA_DOMAIN} {
+	encode gzip
+
+	# mubEZ agrega sus propias cabeceras de seguridad
+	# (SECURITY_HEADERS_ENABLED); aquí solo se fuerza HTTPS.
+	reverse_proxy mubez:8787
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		-Server
+	}
+}

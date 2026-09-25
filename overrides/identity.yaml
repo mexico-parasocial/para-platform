@@ -1,0 +1,41 @@
+# Se aplica sobre mubEZ/docker-compose.yml.
+#
+# El compose de mubEZ está pensado para desarrollo: fija NODE_ENV=development
+# y trae secretos por defecto en `environment`. En development el broker
+# activa el "dev-token bootstrap", que entrega un token M8 para CUALQUIER DID
+# sin pruebas. Por eso aquí `environment` se reemplaza completo (`!override`)
+# en vez de mezclarse: si se mezclara, los secretos de desarrollo del archivo
+# base le ganarían a `env_file`.
+#
+# Los secretos viven en env/identity.env (ver env/identity.env.example). Si
+# falta el archivo, Compose no arranca; si falta un secreto, mubEZ se niega a
+# arrancar en producción (JWT_SECRET, APP_KEY, COOKIE_SECRET, CURP_PEPPER).
+
+services:
+  mubez:
+    profiles: [identity]
+    # Solo el edge (Caddy) debe hablar con el broker; no se publica en el host.
+    ports: !reset []
+    env_file:
+      - ${PLATFORM_DIR:?Ejecuta con make desde para-platform}/env/identity.env
+    environment: !override
+      NODE_ENV: production
+      PORT: '8787'
+      HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/mubez.db
+      DATABASE_AUTOMIGRATE: 'true'
+      SECURITY_HEADERS_ENABLED: 'true'
+      RATE_LIMIT_ENABLED: 'true'
+      SERVICE_URL: https://m8.${PARA_DOMAIN:?Define PARA_DOMAIN en .env}
+      # Detrás de Caddy la IP real del cliente llega en X-Forwarded-For; sin
+      # esto el rate limit trataría a todos como la misma IP (la de Caddy).
+      TRUST_PROXY_HEADERS: 'true'
+      PDS_URL: https://pds.${PARA_DOMAIN}
+      PLC_URL: ${PLC_URL:-https://plc.directory}
+    networks:
+      - default
+      - para-edge
+
+networks:
+  para-edge:
+    external: true
