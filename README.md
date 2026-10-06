@@ -98,6 +98,32 @@ reemplaza por completo ese bloque: fuerza producción, toma los secretos de
 el broker). `make doctor-prod` revisa que los secretos existan, sean largos y
 no parezcan de desarrollo, y que CORS no esté abierto.
 
+### Aceptación del login de PARA
+
+La configuración de producción debe habilitar el handoff OAuth y deshabilitar
+el bootstrap de desarrollo. `env/identity.env.example` incluye los dos flags y
+los callbacks; sustituye el origen web de ejemplo en CORS y en
+`OAUTH_RETURN_TO_ALLOWLIST`. El callback nativo vigente es `para://m8-auth`.
+Aplica primero las migraciones 040–041 del broker, después de respaldar su base.
+
+Antes de probar los clientes, ejecuta dentro del broker desplegado:
+
+```bash
+make login-preflight WEB_ORIGIN=https://ORIGEN_WEB_REAL
+```
+
+El preflight revisa su entorno efectivo, las columnas/migraciones de la base en
+modo lectura, los metadatos públicos, CORS y la ruta web `/m8-auth`. No crea
+sesiones, emite tokens ni aplica migraciones. `--config-only` omite las llamadas
+HTTP y no acredita conectividad. Fuera del contenedor, desde mubEZ, puedes usar
+`pnpm login:preflight --web-origin https://ORIGEN_WEB_REAL`.
+
+Un resultado correcto todavía exige registrar las revisiones desplegadas y
+probar el proveedor real en iOS, Android y web. La web reconecta M8 al recargar.
+El estado del piloto y la siguiente acción están en
+[la cola canónica](../WatZappa/docs/QUARTER_PLAN_2026Q4.md), con evidencia en
+[el registro de login](../WatZappa/docs/M8-LOGIN-EXECUTION-2026-10-05.md).
+
 ## Cómo está armado
 
 - `compose.yaml` incluye `WatZappa/docker-compose.prod.yaml`,

@@ -30,6 +30,11 @@ doctor: ## Revisa servicios, DIDs, configuración y builds del entorno local
 doctor-prod: ## Revisa los endpoints públicos de PARA_DOMAIN
 	@./scripts/doctor.sh prod
 
+.PHONY: login-preflight
+login-preflight: ## Revisa login sin emitir tokens (WEB_ORIGIN=https://tu-app)
+	@test -n "$$WEB_ORIGIN" || { echo 'Define WEB_ORIGIN con el origen web real de PARA'; exit 2; }
+	$(COMPOSE) exec mubez node build/bin/para_login_preflight.js --web-origin "$$WEB_ORIGIN"
+
 .PHONY: network
 network: ## Crea la red compartida para-edge si no existe
 	@docker network inspect para-edge >/dev/null 2>&1 || docker network create para-edge
