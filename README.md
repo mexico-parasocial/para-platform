@@ -98,6 +98,22 @@ reemplaza por completo ese bloque: fuerza producción, toma los secretos de
 el broker). `make doctor-prod` revisa que los secretos existan, sean largos y
 no parezcan de desarrollo, y que CORS no esté abierto.
 
+### Autoridad de comunidades
+
+Selecciona la revisión integrada de WatZappa antes de levantar la plataforma.
+Define `PARA_AUTHORITY_SERVICE_TOKEN` en `.env` con una credencial dedicada de
+32–512 caracteres; Compose la pasa explícitamente al AppView y al bridge. El
+bridge consulta `https://appview.PARA_DOMAIN` por defecto; puedes definir
+`BRIDGE_AUTHORITY_APPVIEW_URL` si el origen real es otro. No uses HTTP entre
+nombres de contenedores: el resolver exige HTTPS salvo loopback local.
+
+Durante la actualización, detén el bridge anterior, aplica las migraciones de
+autoridad del AppView y después levanta la revisión integrada del bridge. Una
+respuesta de salud no acredita autoridad: verifica roles falsificados, cambios
+legítimos, reparación del estado previo y revocación en el homeserver real.
+El procedimiento y el estado están en
+[el registro de autoridad](../WatZappa/docs/TRUSTED-AUTHORITY-EXECUTION-2026-10-05.md).
+
 ### Aceptación del login de PARA
 
 La configuración de producción debe habilitar el handoff OAuth y deshabilitar

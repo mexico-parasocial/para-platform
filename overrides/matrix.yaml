@@ -21,3 +21,5 @@ services:
       # Dentro de la plataforma mubEZ se alcanza por nombre de servicio; ya no
       # hace falta salir al host por host.docker.internal.
       M8_BASE_URL: ${M8_BASE_URL:-http://mubez:8787/v1}
+      BRIDGE_AUTHORITY_APPVIEW_URL: ${BRIDGE_AUTHORITY_APPVIEW_URL:-https://appview.${PARA_DOMAIN:?Define PARA_DOMAIN en .env}}
+      PARA_AUTHORITY_SERVICE_TOKEN: ${PARA_AUTHORITY_SERVICE_TOKEN:-}
