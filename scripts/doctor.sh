@@ -14,28 +14,11 @@ set -uo pipefail
 
 MODE="${1:-dev}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$HERE"
+cd "$HERE" || exit 2
 
-# Carga solo las rutas de .env (no hace falta el resto para el diagnóstico).
-env_value() { # env_value FILE KEY
-  [ -f "$1" ] || return 0
-  grep -E "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'
-}
-abs_dir() { (cd "$HERE" && cd "$1" 2>/dev/null && pwd) || echo "$1"; }
-
-# Prioridad: variable de entorno, luego .env de la plataforma, luego la carpeta
-# hermana por defecto. El default se aplica antes de resolver la ruta: una
-# ruta vacía haría que `cd` se quede en esta misma carpeta.
-repo_dir() { # repo_dir VAR default
-  local v="${!1:-}"
-  [ -z "$v" ] && v="$(env_value .env "$1")"
-  [ -z "$v" ] && v="$2"
-  abs_dir "$v"
-}
-WATZAPPA_DIR="$(repo_dir WATZAPPA_DIR ../WatZappa)"
-MUBEZ_DIR="$(repo_dir MUBEZ_DIR ../mubEZ)"
-PARA_DIR="$(repo_dir PARA_DIR ../PARA)"
-IM8_DIR="$(repo_dir IM8_DIR ../../iM8)"
+# Rutas de los repos y funciones comunes (env_value, repo_dir, lan_ip).
+# shellcheck source=scripts/lib.sh
+. "$HERE/scripts/lib.sh"
 
 OKS=0; WARNS=0; FAILS=0
 ok()   { OKS=$((OKS + 1));   printf '  ✅ %s\n' "$1"; }
@@ -131,14 +114,14 @@ check_service() { # nombre url esperado(200|any) arreglo
 
 section_services_dev() {
   section "Servicios locales"
-  local devenv="cd $WATZAPPA_DIR && make run-dev-env-persistent"
+  local devenv="make dev  (desde $HERE; levanta todo)"
   check_service "PLC"              http://localhost:2582/_health        200 "$devenv"
   check_service "PDS"              http://localhost:2583/xrpc/_health   200 "$devenv"
   check_service "AppView"          http://localhost:2584/xrpc/_health   200 "$devenv"
   check_service "Chat (dev)"       http://localhost:2590/xrpc/_health   any "$devenv"
   check_service "Introspección"    http://127.0.0.1:2581/               200 "$devenv"
-  check_service "Matrix bridge"    http://localhost:3001/healthz        200 "cd $WATZAPPA_DIR/services/matrix-bridge && pnpm start"
-  check_service "Broker M8 (mubEZ)" http://localhost:8787/v1/health     200 "cd $MUBEZ_DIR && pnpm dev"
+  check_service "Matrix bridge"    http://localhost:3001/healthz        200 "$devenv  (con FRESH=1 no hay bridge)"
+  check_service "Broker M8 (mubEZ)" http://localhost:8787/v1/health     200 "$devenv"
 }
 
 # ---------------------------------------------------------------------------
@@ -160,7 +143,7 @@ except Exception: pass' 2>/dev/null)"
     ok "PARA usa el DID del AppView en ejecución ($live)"
   else
     fail "PARA hace proxy a $configured ($source), pero el AppView es $live" \
-      "Pon EXPO_PUBLIC_LOCAL_BSKY_PROXY_DID=$live en $PARA_DIR/.env.local y reinicia Metro con --clear"
+      "make dev-app-env  (pone EXPO_PUBLIC_LOCAL_BSKY_PROXY_DID=$live en PARA/.env.local) y reinicia Metro con --clear"
   fi
   if [ -n "$configured" ] && ! plc_has "$configured"; then
     fail "$configured no existe en el PLC local: el login fallará con 'could not resolve proxy did'" \
@@ -177,14 +160,13 @@ except Exception: pass' 2>/dev/null)"
 # ---------------------------------------------------------------------------
 section_config_dev() {
   section "Configuración"
-  local iface ip para_ip broker bridge
-  iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
-  ip="$( [ -n "$iface" ] && ipconfig getifaddr "$iface" 2>/dev/null || true)"
+  local ip para_ip
+  ip="$(lan_ip)"
   para_ip="$(para_env EXPO_PUBLIC_LOCAL_DEV_IP)"
   if [ -z "$para_ip" ]; then ok "PARA usa localhost (sin EXPO_PUBLIC_LOCAL_DEV_IP): válido para web y simulador"
   elif [ "$para_ip" = "$ip" ]; then ok "IP de la Mac coincide con EXPO_PUBLIC_LOCAL_DEV_IP ($ip)"
   else fail "EXPO_PUBLIC_LOCAL_DEV_IP=$para_ip pero la Mac hoy es ${ip:-desconocida}" \
-    "Actualiza la IP en $PARA_DIR/.env.local (también M8_BROKER_URL y MATRIX_BRIDGE_URL) y reinicia Metro con --clear"; fi
+    "make dev-app-env  (actualiza IP, M8_BROKER_URL y MATRIX_BRIDGE_URL) y reinicia Metro con --clear"; fi
 
   for key in EXPO_PUBLIC_M8_BROKER_URL EXPO_PUBLIC_MATRIX_BRIDGE_URL; do
     local url; url="$(para_env $key)"
@@ -197,19 +179,24 @@ try: print(socket.gethostbyname(sys.argv[1]))
 except Exception: pass' "$host" 2>/dev/null)"
     case "$resolved" in
       "$ip"|127.*) ok "$key → $url" ;;
-      "") fail "$key apunta a $host, que no resuelve" "Usa la IP de la Mac ($ip) o su nombre .local en $PARA_DIR/.env.local" ;;
-      *) fail "$key apunta a $host ($resolved), que no es esta Mac ($ip)" "Actualiza $key en $PARA_DIR/.env.local" ;;
+      "") fail "$key apunta a $host, que no resuelve" "make dev-app-env" ;;
+      *) fail "$key apunta a $host ($resolved), que no es esta Mac ($ip)" "make dev-app-env" ;;
     esac
   done
 
   if [ ! -f "$MUBEZ_DIR/.env" ]; then
-    fail "mubEZ no tiene .env" "cd $MUBEZ_DIR && cp .env.example .env && pnpm db:migrate"
+    fail "mubEZ no tiene .env" "make setup"
   else
-    local plc; plc="$(env_value "$MUBEZ_DIR/.env" PLC_URL)"
+    # make dev le pasa PLC_URL por entorno (le gana a .env); si está corriendo,
+    # manda lo que ve el proceso.
+    local plc mpid
+    mpid="$(lsof -tiTCP:8787 -sTCP:LISTEN 2>/dev/null | head -1)"
+    [ -n "$mpid" ] && plc="$(ps eww -p "$mpid" 2>/dev/null | tr ' ' '\n' | grep '^PLC_URL=' | cut -d= -f2-)"
+    [ -z "${plc:-}" ] && plc="$(env_value "$MUBEZ_DIR/.env" PLC_URL)"
     case "$plc" in
       http://localhost:2582*|http://127.0.0.1:2582*) ok "mubEZ resuelve DIDs contra el PLC local" ;;
       *) fail "mubEZ usa PLC_URL=${plc:-default} y no resolverá cuentas locales (inventa DIDs para handles)" \
-           "En $MUBEZ_DIR/.env pon PLC_URL=http://localhost:2582 y PDS_URL=http://localhost:2583" ;;
+           "Arráncalo con make dev (le pasa el PLC local) o pon PLC_URL=http://localhost:2582 en $MUBEZ_DIR/.env" ;;
     esac
   fi
 
@@ -260,27 +247,27 @@ section_prod() {
     fail "PARA_DOMAIN no está definido en $HERE/.env" "cp .env.example .env y define PARA_DOMAIN"
   else ok "PARA_DOMAIN=$domain"; fi
 
-  local idenv="$HERE/env/identity.env"
-  if [ ! -f "$idenv" ]; then
-    fail "Falta env/identity.env (secretos de mubEZ)" "cp env/identity.env.example env/identity.env y llénalo"
-  else
-    for key in JWT_SECRET APP_KEY COOKIE_SECRET CURP_PEPPER; do
-      local v; v="$(env_value "$idenv" $key)"
-      if [ -z "$v" ]; then fail "$key vacío en env/identity.env" "openssl rand -base64 48"
-      elif [ "${#v}" -lt 32 ]; then fail "$key es demasiado corto (${#v} caracteres, mínimo 32)" "openssl rand -base64 48"
-      elif printf '%s' "$v" | grep -qiE 'dev|change-me|example'; then fail "$key parece un valor de desarrollo" "openssl rand -base64 48"
-      else ok "$key definido"; fi
-    done
-    local cors; cors="$(env_value "$idenv" CORS_ORIGIN)"
-    if [ "$cors" = "*" ] || [ -z "$cors" ]; then fail "CORS_ORIGIN de mubEZ está abierto (${cors:-vacío})" "Lista solo tus dominios, p. ej. https://$domain"
-    else ok "CORS_ORIGIN de mubEZ restringido"; fi
-  fi
+  local v tag
+  for v in WATZAPPA_VERSION MUBEZ_VERSION; do
+    tag="$(env_value .env "$v")"
+    case "$tag" in
+      ''|local|main|latest) fail "$v=${tag:-local}: no es una imagen fijada" "Usa sha-<commit> o X.Y.Z; make upgrade $v=..." ;;
+      *) ok "$v=$tag" ;;
+    esac
+  done
 
-  if grep -q 'NODE_ENV: production' "$HERE/overrides/identity.yaml" 2>/dev/null; then
-    ok "mubEZ se fuerza a NODE_ENV=production (sin dev-token bootstrap)"
+  if "$HERE/scripts/secrets.sh" check >/dev/null 2>&1; then ok "Secretos en orden (secrets/)"
+  else fail "Hay secretos que arreglar" "scripts/secrets.sh check"; fi
+
+  if grep -q 'NODE_ENV: production' "$HERE/overrides/identity.yaml" 2>/dev/null &&
+     grep -q 'dev_token_bootstrap":false' "$HERE/overrides/identity.yaml" 2>/dev/null; then
+    ok "mubEZ se fuerza a producción sin dev-token bootstrap"
   else
-    fail "overrides/identity.yaml no fuerza NODE_ENV=production" "Cualquiera podría pedir tokens M8 para cualquier DID"
+    fail "overrides/identity.yaml no fuerza NODE_ENV=production y dev_token_bootstrap=false" "Cualquiera podría pedir tokens M8 para cualquier DID"
   fi
+  local cors; cors="$(env_value .env M8_CORS_ORIGIN)"
+  if [ "$cors" = "*" ]; then fail "M8_CORS_ORIGIN está abierto (*)" "Lista solo tus dominios, p. ej. https://$domain"
+  else ok "CORS de mubEZ restringido (${cors:-https://$domain})"; fi
 
   [ -z "$domain" ] || [ "$domain" = "example.org" ] && return 0
   section "Endpoints públicos de $domain"
@@ -289,6 +276,7 @@ section_prod() {
   check_service "Ozone"      "https://ozone.$domain/xrpc/_health"   200 "make logs S=ozone"
   check_service "Bridge"     "https://bridge.$domain/healthz"       200 "make logs S=matrix-bridge"
   check_service "Broker M8"  "https://m8.$domain/v1/health"         200 "make logs S=mubez"
+  printf '\n  Revisión completa del despliegue: make verify\n'
 }
 
 # ---------------------------------------------------------------------------
