@@ -1,154 +1,139 @@
 # para-platform
 
-Punto de entrada único para levantar y diagnosticar la plataforma PARA. Este
-repo **no contiene código de servicios**: une los que ya viven en cada repo y
-agrega solo lo que pertenece a la plataforma (perfiles, el edge y el
-diagnóstico).
-
-| Repo | Qué es | Dónde corre |
-| --- | --- | --- |
-| WatZappa | Red AT Protocol (PLC, PDS, AppView, Ozone) y Matrix | servidor |
-| mubEZ | Broker M8: identidad, INE, ZKP, llaves | servidor (aislado) |
-| PARA | App (iOS, Android, web) | dispositivos / web |
-| iM8 | Billetera de identidad | dispositivos |
-
-Se espera esta estructura de carpetas (se puede cambiar en `.env`):
+Punto de entrada único para desarrollar, levantar y operar la plataforma PARA.
+Este repo **no contiene código de servicios**: une los que ya viven en cada
+repo y agrega solo lo que pertenece a la plataforma (perfiles, secretos, el
+edge, respaldos, monitoreo y diagnóstico).
 
 ```
-macserver/
-  para-platform/   ← este repo
-  WatZappa/
-  mubEZ/
-  PARA/
-../iM8/
+                         internet (80/443)
+                               │
+                            Caddy ── HTTPS · certificados de handles bajo demanda · rutas de operador cerradas
+   ┌─────────┬──────────┬──────┴───┬─────────┬──────────┬──────────────────┐
+ <dominio>  pds.     appview. ×N  ozone.   bridge.     m8.        matrix. auth. idp. chat.
+ app web    PDS      AppView     Ozone   bridge     mubEZ     Synapse  MAS  para-idp Element
+ (bskyweb)  + handles                                │          │
+               │          │          │       │       Litestream    │
+               └──────────┴────┬─────┴───────┴───────────┼─────────┘
+                    Postgres (una sola)   Redis (caché)  │
+                          │ respaldos                    │ WAL en ~1 s
+                          └──────────────────────────────┴──► bucket (S3/R2/GCS)
 ```
 
-## Desarrollo local
+| | |
+| --- | --- |
+| **2** lugares con estado | Postgres y un bucket. Todo lo demás es caché o se reconstruye: perder un contenedor o su disco no pierde nada. |
+| **1** comando para desarrollar | `make dev` levanta PLC, PDS, AppView, chat, bridge y el broker M8 en una terminal. |
+| **1** comando para desplegar | `make up` descarga imágenes ya construidas por CI; nada compila en el servidor. |
+| **2** tamaños | `tiny` (una VM de 4 vCPU / 8 GB) y `standard` (8 vCPU / 32 GB, AppView en réplicas). |
+| **0** secretos en variables | Cada secreto es un archivo; si llega por dos lados, el servicio no arranca. |
+| **5** llaves para guardar offline | El resto vive en el bucket o se regenera. |
 
-En desarrollo los servicios corren como procesos (no contenedores). El orden:
-
-1. `cd WatZappa && make run-dev-env-persistent` (PLC, PDS, AppView, chat)
-2. `cd WatZappa/services/matrix-bridge && pnpm start`
-3. `cd mubEZ && pnpm dev` (con `PLC_URL=http://localhost:2582` y
-   `PDS_URL=http://localhost:2583` en `mubEZ/.env`)
-4. `cd PARA && npx expo start --clear`
-
-Luego, siempre que algo falle:
+## Desarrollo
 
 ```bash
-make doctor
+make setup     # una vez: revisa herramientas, instala dependencias, crea mubEZ/.env
+make dev       # todo el backend en una terminal; Ctrl-C lo detiene todo
 ```
 
-`doctor` revisa, y en cada falla dice el comando que la arregla:
-
-- **Servicios:** que cada puerto responda (PLC, PDS, AppView, chat, bridge,
-  broker, introspección).
-- **DIDs:** que el DID al que PARA hace proxy sea el del AppView en ejecución
-  y exista en el PLC (el error "could not resolve proxy did").
-- **Configuración:** que la IP o el nombre `.local` en `PARA/.env.local`
-  apunten a esta Mac, y que mubEZ resuelva cuentas contra el PLC local.
-- **Builds:** que ningún `dist/` sea más viejo que su `src/`, y que ningún
-  proceso siga corriendo código anterior a su último build.
-- **Repos:** en qué rama está cada uno y si tiene cambios sin commit.
+`make dev APP=web` (o `ios`, `android`) arranca también la app. `MATRIX=1`
+agrega Synapse/MAS; `FRESH=1` usa un perfil desechable. Cuando algo falla:
+`make doctor`, que dice qué está mal y el comando que lo arregla. Más en
+[docs/DESARROLLO.md](docs/DESARROLLO.md).
 
 ## Producción
 
 ```bash
-cp .env.example .env                              # PARA_DOMAIN, rutas, PROFILES
-cp env/identity.env.example env/identity.env      # secretos de mubEZ
-make doctor-prod                                  # revisa la configuración
-make up                                           # levanta los perfiles de PROFILES
+cp .env.example .env     # PARA_DOMAIN, bucket, versiones fijadas
+make secrets             # genera los secretos (o make secrets-import desde los .env de antes)
+make matrix-init         # una vez, si usas Matrix (docs/MATRIX.md)
+make preflight           # configuración, secretos, bucket y DNS: antes de levantar nada
+make up                  # descarga y levanta
+make verify              # contenedores, endpoints públicos, respaldos
 ```
 
-Perfiles (`make up PROFILES=core,edge`, etc.):
+Con Ansible es lo mismo, de una máquina vacía a verificada:
+[deploy/ansible/README.md](deploy/ansible/README.md).
 
-| Perfil | Servicios |
+Lo propio de PARA tiene su comando: `make invite` (primera cuenta),
+`make matrix-admin-token` (admin del chat), `make app-env` (URLs para
+compilar la app).
+
+| Perfil de Compose | Servicios |
 | --- | --- |
-| `core` | Postgres, Redis, PDS, AppView (bsky + dataplane), bsync, Ozone |
-| `matrix` | Synapse, MAS, para-idp, Element, matrix-bridge |
-| `identity` | mubEZ |
-| `edge` | Caddy: HTTPS y dominios públicos |
+| `core` | Postgres, Redis, PDS, AppView (bsky + dataplane), bsync, Ozone, respaldos |
+| `matrix` | Synapse, MAS, para-idp, Element, matrix-bridge, respaldo de media |
+| `identity` | mubEZ (broker M8), replicando su base al bucket |
+| `edge` | Caddy |
+| `monitoring` | Alloy: métricas y logs a tu Prometheus/Loki |
+| `local-s3` | Un S3 local para probar sin nube |
+| `web` | La app web de PARA (bskyweb) en el dominio raíz |
 
-Otros comandos: `make ps`, `make logs S=mubez`, `make down`, `make config`
-(muestra la configuración final sin levantar nada).
+## Documentación
 
-### El edge
-
-Caddy es lo único expuesto a internet (puertos 80 y 443). Emite los
-certificados HTTPS y reparte el tráfico por subdominio:
-
-| Dominio | Servicio |
+| | |
 | --- | --- |
-| `pds.PARA_DOMAIN` y `PARA_DOMAIN` | PDS |
-| `appview.PARA_DOMAIN` | AppView |
-| `ozone.PARA_DOMAIN` | Ozone |
-| `bridge.PARA_DOMAIN` | matrix-bridge |
-| `m8.PARA_DOMAIN` | mubEZ (broker M8) |
+| [Desarrollo](docs/DESARROLLO.md) | `make dev`, la app en el teléfono, datos de prueba, problemas comunes |
+| [Operaciones](docs/OPERACIONES.md) | El ciclo del operador y por dónde empezar |
+| [Despliegue](docs/DESPLIEGUE.md) | Una máquina de cero, a mano o con Ansible |
+| [Configuración](docs/CONFIGURACION.md) | Perfiles, memoria, cada secreto, cada variable |
+| [Escalado](docs/ESCALADO.md) | Réplicas, workers de AppView, cuándo crecer |
+| [Respaldos](docs/RESPALDOS.md) | Qué es durable y dónde, restaurar, las llaves offline |
+| [Actualizaciones](docs/ACTUALIZACIONES.md) | Cambiar de versión y migrar desde el despliegue anterior |
+| [Matrix](docs/MATRIX.md) | Synapse, MAS, para-idp y Element: hosts, login, primera vez |
+| [App](docs/APP.md) | Las URLs que la app hornea al compilar y la app web |
+| [Runbook](docs/RUNBOOK.md) | Una sección por alerta |
+| [vlpds](docs/VLPDS.md) | Qué tomamos de vlpds, el fork, y qué hacer con Spaces |
 
-`edge/Caddyfile` importa el Caddyfile de WatZappa tal cual y solo agrega las
-rutas de servicios de otros repos. Cada repo sigue siendo dueño de sus rutas.
+## Cómo está armado
+
+- `compose.yaml` incluye `WatZappa/docker-compose.prod.yaml`,
+  `WatZappa/docker-compose.matrix.yaml` y `mubEZ/docker-compose.yml`, cada uno
+  con un override de `overrides/`, más `ops/compose.yaml`. No se copia nada:
+  si un repo cambia su compose, la plataforma lo toma.
+- Todo queda en un solo proyecto de Compose (`para`), así que los servicios se
+  ven por nombre (el bridge llama a `http://mubez:8787/v1`).
+- El tamaño sale de `profiles/<PARA_PROFILE>.env`; cualquier valor se
+  sobrescribe en `.env`.
+- `make check` valida este repo (scripts, Compose en los dos perfiles,
+  Caddyfile, alertas, Alloy, Ansible) usando solo Docker.
+- Requiere Docker Compose v2.24 o superior (`include` con varios archivos y
+  `!override`/`!reset`).
 
 ### Seguridad de mubEZ
 
 El `docker-compose.yml` de mubEZ es de desarrollo: fija `NODE_ENV=development`
 y trae secretos por defecto. En development el broker entrega un token M8 para
 **cualquier DID sin pruebas** (dev-token bootstrap). `overrides/identity.yaml`
-reemplaza por completo ese bloque: fuerza producción, toma los secretos de
-`env/identity.env` y no publica el puerto 8787 en el host (solo Caddy habla con
-el broker). `make doctor-prod` revisa que los secretos existan, sean largos y
-no parezcan de desarrollo, y que CORS no esté abierto.
+reemplaza por completo ese bloque: fuerza producción, apaga el dev-token
+bootstrap, toma los secretos de `secrets/` y no publica el puerto 8787 en el
+host (solo Caddy habla con el broker).
 
 ### Autoridad de comunidades
 
-Selecciona la revisión integrada de WatZappa antes de levantar la plataforma.
-Define `PARA_AUTHORITY_SERVICE_TOKEN` en `.env` con una credencial dedicada de
-32–512 caracteres; Compose la pasa explícitamente al AppView y al bridge. El
-bridge consulta `https://appview.PARA_DOMAIN` por defecto; puedes definir
-`BRIDGE_AUTHORITY_APPVIEW_URL` si el origen real es otro. No uses HTTP entre
-nombres de contenedores: el resolver exige HTTPS salvo loopback local.
-
-Durante la actualización, detén el bridge anterior, aplica las migraciones de
-autoridad del AppView y después levanta la revisión integrada del bridge. Una
-respuesta de salud no acredita autoridad: verifica roles falsificados, cambios
-legítimos, reparación del estado previo y revocación en el homeserver real.
-El procedimiento y el estado están en
+`secrets/authority_service_token` es la credencial dedicada que comparten el
+AppView y el bridge. El bridge consulta `https://appview.PARA_DOMAIN` por
+defecto (`BRIDGE_AUTHORITY_APPVIEW_URL` lo cambia); el resolver exige HTTPS
+salvo loopback. Durante una actualización, detén el bridge anterior, aplica
+las migraciones de autoridad del AppView y después levanta el bridge nuevo.
+Una respuesta de salud no acredita autoridad: el procedimiento y el estado
+están en
 [el registro de autoridad](../WatZappa/docs/TRUSTED-AUTHORITY-EXECUTION-2026-10-05.md).
 
 ### Aceptación del login de PARA
 
-La configuración de producción debe habilitar el handoff OAuth y deshabilitar
-el bootstrap de desarrollo. `env/identity.env.example` incluye los dos flags y
-los callbacks; sustituye el origen web de ejemplo en CORS y en
-`OAUTH_RETURN_TO_ALLOWLIST`. El callback nativo vigente es `para://m8-auth`.
-Aplica primero las migraciones 040–041 del broker, después de respaldar su base.
-
-Antes de probar los clientes, ejecuta dentro del broker desplegado:
+La plataforma ya habilita el handoff OAuth y apaga el bootstrap de
+desarrollo. Ajusta `M8_CORS_ORIGIN` y `M8_OAUTH_RETURN_TO_ALLOWLIST` en `.env`
+si el origen web no es `https://PARA_DOMAIN`. Aplica primero las migraciones
+040–041 del broker, después de respaldar su base (`make backup`). Antes de
+probar los clientes:
 
 ```bash
 make login-preflight WEB_ORIGIN=https://ORIGEN_WEB_REAL
 ```
 
-El preflight revisa su entorno efectivo, las columnas/migraciones de la base en
-modo lectura, los metadatos públicos, CORS y la ruta web `/m8-auth`. No crea
-sesiones, emite tokens ni aplica migraciones. `--config-only` omite las llamadas
-HTTP y no acredita conectividad. Fuera del contenedor, desde mubEZ, puedes usar
-`pnpm login:preflight --web-origin https://ORIGEN_WEB_REAL`.
-
-Un resultado correcto todavía exige registrar las revisiones desplegadas y
-probar el proveedor real en iOS, Android y web. La web reconecta M8 al recargar.
-El estado del piloto y la siguiente acción están en
+El preflight revisa el entorno efectivo, las migraciones en modo lectura, los
+metadatos públicos, CORS y la ruta web `/m8-auth`; no crea sesiones ni emite
+tokens. El estado del piloto está en
 [la cola canónica](../WatZappa/docs/QUARTER_PLAN_2026Q4.md), con evidencia en
 [el registro de login](../WatZappa/docs/M8-LOGIN-EXECUTION-2026-10-05.md).
-
-## Cómo está armado
-
-- `compose.yaml` incluye `WatZappa/docker-compose.prod.yaml`,
-  `WatZappa/docker-compose.matrix.yaml` y `mubEZ/docker-compose.yml`, cada uno
-  con un override de `overrides/`. No se copia nada: si un repo cambia su
-  compose, la plataforma lo toma.
-- Todo queda en un solo proyecto de Compose (`para`), así que los servicios se
-  ven por nombre (el bridge llama a `http://mubez:8787/v1`). La red externa
-  `para-edge` se conserva para los despliegues antiguos por separado;
-  `make up` la crea si falta.
-- Requiere Docker Compose v2.24 o superior (`include` con varios archivos y
-  `!override`).
